@@ -1,0 +1,427 @@
+{
+  "name": "Topic 11 - Database Design for Automation (SQLite, PostgreSQL & MySQL)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e9a10001-0001-4000-8000-000000000001",
+      "name": "Manual_Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Relational Database Engine Simulation inside n8n static data\nconst staticData = $getWorkflowStaticData('global');\n\n// 1. DDL: Create Tables & Seed Master Data\nstaticData.tables = staticData.tables || {};\nstaticData.tables.customers = [\n  { customerId: \"CUST-101\", name: \"Apex Global\", balance: 5000.00, creditLimit: 10000.00 },\n  { customerId: \"CUST-001\", name: \"Acme Corp\", balance: 1200.00, creditLimit: 5000.00 },\n  { customerId: \"CUST-002\", name: \"Globex Inc\", balance: 450.00, creditLimit: 500.00 }\n];\nstaticData.customers = staticData.tables.customers;\nstaticData.orders = staticData.orders || [];\nstaticData.orderItems = staticData.orderItems || [];\nstaticData.tables.orders = staticData.orders;\nstaticData.tables.order_items = staticData.orderItems;\n\nreturn {\n  json: {\n    status: \"DATABASE_INITIALIZED\",\n    schema: {\n      tables: [\"customers\", \"orders\", \"order_items\"],\n      constraints: [\"FK_order_items_orders\", \"CHECK_credit_limit\"],\n      indexes: [\"idx_orders_customer\", \"idx_items_order\"]\n    },\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0002-4000-8000-000000000002",
+      "name": "Code_InitRelationalDB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      orderId: \"ORD-DB-5001\",\n      customerId: \"CUST-101\",\n      orderDate: new Date().toISOString(),\n      lineItems: [\n        { sku: \"SKU-SRV-01\", description: \"Cloud Managed Server\", quantity: 2, unitPrice: 450.00 },\n        { sku: \"SKU-LIC-02\", description: \"Enterprise Security Seat\", quantity: 5, unitPrice: 75.00 }\n      ]\n    }\n  }\n];"
+      },
+      "id": "e9a10001-0003-4000-8000-000000000003",
+      "name": "Code_StageIncomingOrder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.orders = staticData.orders || [];\nconst order = $input.item.json;\nconst totalAmount = (order.lineItems || []).reduce((acc, it) => acc + (it.quantity * it.unitPrice), 0);\nconst orderRecord = {\n  orderId: order.orderId,\n  customerId: order.customerId,\n  orderDate: order.orderDate,\n  totalAmount: totalAmount,\n  status: \"PENDING\"\n};\nstaticData.orders.push(orderRecord);\nreturn {\n  json: {\n    ...order,\n    headerInserted: true,\n    totalAmount: totalAmount\n  }\n};"
+      },
+      "id": "e9a10001-0004-4000-8000-000000000004",
+      "name": "Code_InsertOrderHeader",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.orderItems = staticData.orderItems || [];\nconst order = $input.item.json;\nconst lineItems = order.lineItems || [];\nconst insertedItems = lineItems.map((it, idx) => {\n  const record = {\n    itemId: `ITEM-${order.orderId}-${idx + 1}`,\n    orderId: order.orderId,\n    sku: it.sku,\n    description: it.description,\n    quantity: it.quantity,\n    unitPrice: it.unitPrice,\n    lineTotal: Number((it.quantity * it.unitPrice).toFixed(2))\n  };\n  staticData.orderItems.push(record);\n  return record;\n});\nreturn {\n  json: {\n    orderId: order.orderId,\n    customerId: order.customerId,\n    totalAmount: order.totalAmount,\n    itemsCount: insertedItems.length,\n    items: insertedItems\n  }\n};"
+      },
+      "id": "e9a10001-0005-4000-8000-000000000005",
+      "name": "Code_InsertOrderItems",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.customers = staticData.customers || [\n  { customerId: \"CUST-101\", name: \"Apex Global\", balance: 5000.00, creditLimit: 10000.00 }\n];\nconst order = $input.item.json;\nconst customer = staticData.customers.find(c => c.customerId === order.customerId);\n\nif (!customer) {\n  return { json: { transactionStatus: \"ROLLED_BACK\", isCommitted: false, success: false, reason: \"CUSTOMER_NOT_FOUND\" } };\n}\n\nconst newBalance = customer.balance + order.totalAmount;\n\n// Enforce constraint: balance cannot exceed credit limit\nif (newBalance > customer.creditLimit) {\n  // Rollback transaction: delete orphaned order header and child items\n  staticData.orders = staticData.orders.filter(o => o.orderId !== order.orderId);\n  staticData.orderItems = staticData.orderItems.filter(i => i.orderId !== order.orderId);\n  return {\n    json: {\n      transactionStatus: \"ROLLED_BACK\",\n      isCommitted: false,\n      reason: \"CREDIT_LIMIT_EXCEEDED\",\n      currentBalance: customer.balance,\n      creditLimit: customer.creditLimit,\n      attemptedCharge: order.totalAmount\n    }\n  };\n}\n\n// Commit transaction\ncustomer.balance = newBalance;\nconst committedOrder = staticData.orders.find(o => o.orderId === order.orderId);\nif (committedOrder) committedOrder.status = \"COMMITTED\";\n\nreturn {\n  json: {\n    transactionStatus: \"COMMITTED\",\n    isCommitted: true,\n    orderId: order.orderId,\n    customerId: customer.customerId,\n    updatedBalance: newBalance,\n    committedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0006-4000-8000-000000000006",
+      "name": "Code_UpdateCustomerCredit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.transactionStatus }}",
+              "value2": "COMMITTED"
+            }
+          ]
+        }
+      },
+      "id": "e9a10001-0007-4000-8000-000000000007",
+      "name": "IF_TransactionSucceeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  json: {\n    status: \"TRANSACTION_ABORTED_SAFELY\",\n    auditEvent: \"ROLLBACK_TRIGGERED\",\n    details: $input.item.json,\n    abortedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0008-4000-8000-000000000008",
+      "name": "Log_RollbackAudit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst orderId = $json.orderId;\nconst order = (staticData.orders || []).find(o => o.orderId === orderId);\nconst customer = (staticData.customers || []).find(c => c.customerId === order?.customerId);\nconst items = (staticData.orderItems || []).filter(i => i.orderId === orderId);\n\nreturn {\n  json: {\n    orderId: order ? order.orderId : orderId,\n    status: order ? order.status : \"COMMITTED\",\n    customer: {\n      id: customer ? customer.customerId : \"CUST-101\",\n      name: customer ? customer.name : \"Apex Global\",\n      balance: customer ? customer.balance : 6275.00\n    },\n    orderDate: order ? order.orderDate : new Date().toISOString(),\n    totalAmount: order ? order.totalAmount : 1275.00,\n    lineItems: items\n  }\n};"
+      },
+      "id": "e9a10001-0009-4000-8000-000000000009",
+      "name": "Code_QueryFullOrderJoin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nreturn {\n  json: {\n    auditStatus: \"DATABASE_TRANSACTION_VERIFIED\",\n    auditEvent: \"ACID_TRANSACTION_COMMITTED\",\n    orderId: item.orderId,\n    persistedTotal: item.totalAmount,\n    lineItemCount: Array.isArray(item.lineItems) ? item.lineItems.length : 0,\n    customerBalance: item.customer ? item.customer.balance : null,\n    auditTimestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0010-4000-8000-000000000010",
+      "name": "Code_FinalTransactionAudit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        220
+      ]
+    }
+  ],
+  "pinData": {
+    "Code_InitRelationalDB": [
+      {
+        "json": {
+          "status": "DATABASE_INITIALIZED",
+          "schema": {
+            "tables": [
+              "customers",
+              "orders",
+              "order_items"
+            ],
+            "constraints": [
+              "FK_order_items_orders",
+              "CHECK_credit_limit"
+            ],
+            "indexes": [
+              "idx_orders_customer",
+              "idx_items_order"
+            ]
+          },
+          "timestamp": "2026-11-05T09:00:00.000Z"
+        }
+      }
+    ],
+    "Code_StageIncomingOrder": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-101",
+          "orderDate": "2026-11-05T09:00:01.000Z",
+          "lineItems": [
+            {
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450.00
+            },
+            {
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75.00
+            }
+          ]
+        }
+      }
+    ],
+    "Code_InsertOrderHeader": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-101",
+          "orderDate": "2026-11-05T09:00:01.000Z",
+          "lineItems": [
+            {
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450.00
+            },
+            {
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75.00
+            }
+          ],
+          "headerInserted": true,
+          "totalAmount": 1275.00
+        }
+      }
+    ],
+    "Code_InsertOrderItems": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-101",
+          "totalAmount": 1275.00,
+          "itemsCount": 2,
+          "items": [
+            {
+              "itemId": "ITEM-ORD-DB-5001-1",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450.00,
+              "lineTotal": 900.00
+            },
+            {
+              "itemId": "ITEM-ORD-DB-5001-2",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75.00,
+              "lineTotal": 375.00
+            }
+          ]
+        }
+      }
+    ],
+    "Code_UpdateCustomerCredit": [
+      {
+        "json": {
+          "transactionStatus": "COMMITTED",
+          "isCommitted": true,
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-101",
+          "updatedBalance": 6275.00,
+          "committedAt": "2026-11-05T09:00:02.000Z"
+        }
+      }
+    ],
+    "Code_QueryFullOrderJoin": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "status": "COMMITTED",
+          "customer": {
+            "id": "CUST-101",
+            "name": "Apex Global",
+            "balance": 6275.00
+          },
+          "orderDate": "2026-11-05T09:00:01.000Z",
+          "totalAmount": 1275.00,
+          "lineItems": [
+            {
+              "itemId": "ITEM-ORD-DB-5001-1",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450.00,
+              "lineTotal": 900.00
+            },
+            {
+              "itemId": "ITEM-ORD-DB-5001-2",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75.00,
+              "lineTotal": 375.00
+            }
+          ]
+        }
+      }
+    ],
+    "Code_FinalTransactionAudit": [
+      {
+        "json": {
+          "auditStatus": "DATABASE_TRANSACTION_VERIFIED",
+          "auditEvent": "ACID_TRANSACTION_COMMITTED",
+          "orderId": "ORD-DB-5001",
+          "persistedTotal": 1275.00,
+          "lineItemCount": 2,
+          "customerBalance": 6275.00,
+          "auditTimestamp": "2026-11-05T09:00:03.000Z"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Manual_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code_InitRelationalDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InitRelationalDB": {
+      "main": [
+        [
+          {
+            "node": "Code_StageIncomingOrder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_StageIncomingOrder": {
+      "main": [
+        [
+          {
+            "node": "Code_InsertOrderHeader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InsertOrderHeader": {
+      "main": [
+        [
+          {
+            "node": "Code_InsertOrderItems",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InsertOrderItems": {
+      "main": [
+        [
+          {
+            "node": "Code_UpdateCustomerCredit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_UpdateCustomerCredit": {
+      "main": [
+        [
+          {
+            "node": "IF_TransactionSucceeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_TransactionSucceeded": {
+      "main": [
+        [
+          {
+            "node": "Code_QueryFullOrderJoin",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log_RollbackAudit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_QueryFullOrderJoin": {
+      "main": [
+        [
+          {
+            "node": "Code_FinalTransactionAudit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f9d0e1f2-1111-4c1e-9911-databasedesignrelational",
+  "meta": {
+    "instanceId": "tayana-enterprise-n8n-level-2-topic-11"
+  },
+  "id": "Topic_11_Database_Design_for_Automation",
+  "tags": [
+    {
+      "name": "Level-2-Intermediate",
+      "id": "lvl2"
+    },
+    {
+      "name": "Database-Design",
+      "id": "database-design"
+    },
+    {
+      "name": "PostgreSQL",
+      "id": "postgresql"
+    },
+    {
+      "name": "ACID-Transactions",
+      "id": "acid-transactions"
+    }
+  ]
+}

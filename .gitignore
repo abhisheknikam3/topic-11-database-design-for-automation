@@ -1,0 +1,15 @@
+# Environment & OS files
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+
+# Node & Python artifacts
+node_modules/
+__pycache__/
+*.pyc
+
+# Local IDE & temporary files
+.vscode/
+.idea/
+scratch/
